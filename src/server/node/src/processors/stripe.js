@@ -226,8 +226,26 @@ const stripe = {
     console.log(`💰 Payee metadata stored for ${payeeMetadata.payee_count || 0} payees`);
     console.log(`⏳ Transfers will be created after payment confirmation`);
 
+    // Create CustomerSession so the Payment Element can display saved payment methods
+    // and offer Apple Pay / Google Pay wallets
+    const customerSession = await stripeSDK.customerSessions.create({
+      customer: customerId,
+      components: {
+        payment_element: {
+          enabled: true,
+          features: {
+            payment_method_redisplay: 'enabled',
+            payment_method_save: 'enabled',
+            payment_method_save_usage: 'on_session',
+            payment_method_remove: 'enabled',
+          }
+        }
+      }
+    });
+
     const response = {
       paymentIntent: paymentIntent.client_secret,
+      customerSessionClientSecret: customerSession.client_secret,
       ephemeralKey: ephemeralKey.secret,
       customer: customerId,
       publishableKey: stripePublishingKey
