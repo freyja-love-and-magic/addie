@@ -239,6 +239,7 @@ To do so they should implement the following methods:
 `deleteUser(uuid, hash)` - Should DELETE a user by calling /user/:uuid.
 
 [addie]: https://www.researchgate.net/publication/44843070_Mary_Addison_Hamilton_Australia's_first_lady_of_numbers
+[hedy]: https://github.com/planet-nine-app/hedy
 [resolver]: https://github.com/planet-nine-app/MAGIC/blob/main/README-DEV.md#resolvers
 [continuebee]: https://github.com/planet-nine-app/continuebee
 
