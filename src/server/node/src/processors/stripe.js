@@ -1,10 +1,9 @@
 import user from '../user/user.js';
+import db from '../persistence/db.js';
 import sessionless from 'sessionless-node';
 import _stripe from 'stripe';
 const stripeKey = process.env.STRIPE_KEY;
 const stripePublishingKey = process.env.STRIPE_PUBLISHING_KEY;
-
-console.log('stripeKey', stripeKey);
 
 // need to think through this case a bit more
 if(!stripeKey) {
@@ -28,64 +27,45 @@ if(!stripeKey) {
 
 const stripeSDK = _stripe(stripeKey);
 
-const validateAndPreparePayees = async (payees, foundUser) => {
-  const groupName = 'group_' + foundUser.uuid;
-  let payeeMetadata = {};
+// Standard US Stripe processing fee: 2.9% + $0.30
+const calculateStripeFee = (amount) => Math.round(amount * 0.029) + 30;
 
-  if(!payees || payees.length === 0) {
-    return { groupName, payeeMetadata };
+// Build payee metadata for payment intent.
+// merchant (optional) receives 91% of amount.
+// payees (each with a percent field ≤9) split the remaining pool after the Stripe fee.
+const buildPayeeMetadata = (payees, merchant, amount) => {
+  const stripeFee = calculateStripeFee(amount);
+  const net = Math.max(0, amount - stripeFee);
+  const merchantAmount = merchant ? Math.min(Math.round(amount * 0.91), net) : 0;
+  const distributable = Math.max(0, net - merchantAmount);
+
+  const metadata = {};
+
+  if (merchant) {
+    metadata.merchant_pubkey = merchant.pubKey;
+    metadata.merchant_amount = merchantAmount.toString();
   }
 
-  let validPayeeCount = 0;
-  for(var i = 0; i < payees.length; i++) {
-    const payee = payees[i];
+  const validPayees = (payees || []).filter(p => p.pubKey && p.percent > 0 && p.percent <= 9);
+  const totalPercent = validPayees.reduce((s, p) => s + p.percent, 0) || 1;
 
-    if(!payee.percent || payee.percent <= 0 || payee.percent > 9) {
-      continue;
-    }
-
-    let payeeUser;
-
-    if(payee.addieURL && payee.signature) {
-      try {
-        const verifyResponse = await fetch(`${payee.addieURL}/verify-payee`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            pubKey: payee.pubKey,
-            addieURL: payee.addieURL,
-            percent: payee.percent,
-            signature: payee.signature
-          })
-        });
-
-        if(verifyResponse.ok) {
-          const result = await verifyResponse.json();
-          payeeUser = result.addieUser;
-        }
-      } catch(err) {
-        console.warn(`⚠️ Failed to fetch payee from ${payee.addieURL}:`, err.message);
-        continue;
-      }
-    }
-
-    payeeMetadata[`payee_${validPayeeCount}_pubkey`] = payee.pubKey;
-    payeeMetadata[`payee_${validPayeeCount}_amount`] = payee.amount.toString();
-
-    if(payee.addieURL) {
-      payeeMetadata[`payee_${validPayeeCount}_addieurl`] = payee.addieURL;
-    }
-    if(payee.signature) {
-      payeeMetadata[`payee_${validPayeeCount}_signature`] = payee.signature.substring(0, 450);
-    }
-
-    payeeMetadata[`payee_${validPayeeCount}_percent`] = payee.percent.toString();
-
-    validPayeeCount++;
+  let count = 0;
+  for (const payee of validPayees) {
+    const payeeAmount = distributable > 0
+      ? Math.round(distributable * payee.percent / Math.max(9, totalPercent))
+      : 0;
+    if (payeeAmount <= 0) continue;
+    metadata[`payee_${count}_pubkey`] = payee.pubKey;
+    metadata[`payee_${count}_amount`] = payeeAmount.toString();
+    metadata[`payee_${count}_percent`] = payee.percent.toString();
+    if (payee.addieURL) metadata[`payee_${count}_addieurl`] = payee.addieURL;
+    if (payee.signature) metadata[`payee_${count}_signature`] = payee.signature.substring(0, 450);
+    count++;
   }
-  payeeMetadata.payee_count = validPayeeCount.toString();
+  metadata.payee_count = count.toString();
+  metadata.stripe_fee = stripeFee.toString();
 
-  return { groupName, payeeMetadata };
+  return metadata;
 };
 
 const stripe = {
@@ -140,6 +120,15 @@ const stripe = {
   },
 
   putStripeExpressAccount: async (foundUser, country, email, refreshUrl, returnUrl) => {
+    const existingAccountId = await db.getExpressAccountByEmail(email);
+
+    if (existingAccountId) {
+      foundUser.stripeAccountId = existingAccountId;
+      await user.saveUser(foundUser);
+      foundUser.alreadyConnected = true;
+      return foundUser;
+    }
+
     const account = await stripeSDK.accounts.create({
       type: 'express',
       country: country,
@@ -151,6 +140,7 @@ const stripe = {
       }
     });
 
+    await db.saveExpressAccountByEmail(email, account.id);
     foundUser.stripeAccountId = account.id;
     await user.saveUser(foundUser);
 
@@ -166,7 +156,7 @@ const stripe = {
     return foundUser;
   },
 
-  getStripePaymentIntent: async (foundUser, amount, currency, payees, savePaymentMethod = false, productInfo = {}) => {
+  getStripePaymentIntent: async (foundUser, amount, currency, payees, savePaymentMethod = false, productInfo = {}, merchant = null) => {
     const customerId = foundUser.stripeCustomerId || (await stripeSDK.customers.create()).id;
     if(foundUser.stripeCustomerId !== customerId) {
       foundUser.stripeCustomerId = customerId;
@@ -178,7 +168,8 @@ const stripe = {
       {apiVersion: '2024-06-20'}
     );
 
-    const { groupName, payeeMetadata } = await validateAndPreparePayees(payees, foundUser);
+    const groupName = 'group_' + foundUser.uuid;
+    const payeeMetadata = buildPayeeMetadata(payees, merchant, amount);
 
     // Add product information to metadata (if provided)
     if(productInfo.productName) {
@@ -198,7 +189,7 @@ const stripe = {
     let description = 'Product purchase';
     if(productInfo.productName) {
       description = `Purchase: ${productInfo.productName}`;
-      if(payeeMetadata.payee_count > 1) {
+      if(parseInt(payeeMetadata.payee_count) > 0) {
         description += ' (with affiliate commission)';
       }
     }
@@ -207,12 +198,12 @@ const stripe = {
       amount: amount,
       currency: currency,
       customer: customerId,
-      description: description, // Shows prominently in Stripe Dashboard
+      description: description,
       automatic_payment_methods: {
 	enabled: true,
       },
       transfer_group: groupName,
-      metadata: payeeMetadata // Store payee info + product info for post-payment processing
+      metadata: payeeMetadata
     };
 
     if(savePaymentMethod) {
@@ -220,11 +211,6 @@ const stripe = {
     }
 
     const paymentIntent = await stripeSDK.paymentIntents.create(paymentIntentData);
-
-    console.log(`✅ Payment intent created: ${paymentIntent.id}`);
-    console.log(`📦 Product: ${productInfo.productName || 'Unknown'}`);
-    console.log(`💰 Payee metadata stored for ${payeeMetadata.payee_count || 0} payees`);
-    console.log(`⏳ Transfers will be created after payment confirmation`);
 
     // Create CustomerSession so the Payment Element can display saved payment methods
     // and offer Apple Pay / Google Pay wallets
@@ -379,8 +365,7 @@ const stripe = {
       });
     });
     await Promise.all(transferPromises);
-console.log('transferPromises');
-console.log('sending');
+
     const response = {
       paymentIntent: paymentIntent.client_secret,
       ephemeralKey: ephemeralKey.secret,
@@ -388,12 +373,6 @@ console.log('sending');
       publishableKey: stripePublishingKey
     };
 
-    // No, let's do the payment intent, and then resolve the money splitting with MAGIC.
-    // We can store value on the user here, and resolve it with magic after creating the splits.
-
-    // let's websocket!
-  
-    // This needs to happen after the payment is confirmed...
     return response;
   },
 
@@ -869,78 +848,6 @@ console.error('Error fetching transactions:', err);
     }
   },
 
-  payPayees: async (payees, groupName, amount) => {
-console.log('payees', payees);
-    const paidOutAmount = payees.reduce((a, c) => a + (c.minimumCost - c.minimumCost * 0.05), 0);
-console.log('paidOutAmount', paidOutAmount);
-console.log('amount', amount);
-    if(paidOutAmount > amount) {
-      return false;
-    }
-    try {
-      let accountsAndAmounts = [];
-      for(var i = 0; i < payees.length; i++) {
-	const payee = payees[i];
-
-        // Fetch Addie user from payee's addieURL (supports cross-base commerce)
-        let payeeUser = null;
-        if(payee.addieURL && payee.signature) {
-          try {
-            // Verify payee signature and get Addie user from their base
-            const verifyResponse = await fetch(`${payee.addieURL}/verify-payee`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                pubKey: payee.pubKey,
-                addieURL: payee.addieURL,
-                percent: payee.percent,
-                signature: payee.signature
-              })
-            });
-
-            if(verifyResponse.ok) {
-              const result = await verifyResponse.json();
-              payeeUser = result.addieUser;
-            }
-          } catch(err) {
-            console.warn(`⚠️ Failed to fetch payee from ${payee.addieURL}:`, err.message);
-          }
-        }
-
-        // Fallback to local database lookup
-        if(!payeeUser) {
-          payeeUser = await user.getUserByPublicKey(payee.pubKey);
-        }
-
-        if(payeeUser && payeeUser.stripeAccountId) {
-          accountsAndAmounts.push({
-            account: payeeUser.stripeAccountId,
-            amount: (payee.minimumCost - payee.minimumCost * 0.05)
-          });
-        } else {
-          console.warn(`⚠️ Payee ${payee.pubKey} has no Stripe account, skipping`);
-        }
-      }
-console.log('accountsAndAmounrs', accountsAndAmounts);
-
-      const transferPromises = accountsAndAmounts.map(accountAndAmount => {
-	return stripeSDK.transfers.create({
-	  amount: accountAndAmount.amount,
-	  currency: 'usd',
-	  destination: accountAndAmount.account,
-	  transfer_group: groupName
-	});
-      });
-      const promResults = await Promise.all(transferPromises);
-console.log(promResults);
-
-      return true;
-    } catch(err) {
-console.warn(err);
-      return false;
-    }
-  },
-
   /**
    * Save a debit card as payout destination (for receiving affiliate commissions)
    * Works with both external debit cards AND issued cards
@@ -1044,27 +951,53 @@ console.warn(err);
 
       const metadata = paymentIntent.metadata;
       const transferGroup = paymentIntent.transfer_group;
+      const productName = metadata.product_name || 'Product';
       const payeeCount = parseInt(metadata.payee_count || '0');
 
-      if(payeeCount === 0) {
-        console.log(`ℹ️ No payees for payment ${paymentIntentId}`);
-        return {
-          success: true,
-          transfers: [],
-          message: 'No payees to transfer to'
-        };
+      let transfers = [];
+
+      // Transfer to merchant (creator/tenant) first — uses Connected Account (stripeAccountId)
+      const merchantPubKey = metadata.merchant_pubkey;
+      const merchantAmount = parseInt(metadata.merchant_amount || '0');
+
+      if (merchantPubKey && merchantAmount > 0) {
+        try {
+          const merchantUser = await user.getUserByPublicKey(merchantPubKey);
+          const destination = merchantUser && (merchantUser.stripeAccountId || merchantUser.stripePayoutCardId);
+          if (destination) {
+            const transfer = await stripeSDK.transfers.create({
+              amount: merchantAmount,
+              currency: 'usd',
+              destination: destination,
+              transfer_group: transferGroup,
+              description: `${productName} - Creator payout`,
+              metadata: {
+                product_name: productName,
+                commission_type: 'creator',
+                payee_pubkey: merchantPubKey.substring(0, 20),
+                original_payment_intent: paymentIntentId,
+                ...(metadata.product_id && { product_id: metadata.product_id }),
+                ...(metadata.contract_uuid && { contract_uuid: metadata.contract_uuid }),
+                ...(metadata.emojicode && { emojicode: metadata.emojicode })
+              }
+            });
+            transfers.push({ pubKey: merchantPubKey, amount: merchantAmount, transferId: transfer.id, destination });
+          } else {
+            console.warn(`⚠️ Merchant ${merchantPubKey} has no Stripe destination, skipping`);
+          }
+        } catch(err) {
+          console.error(`❌ Failed to transfer to merchant ${merchantPubKey}:`, err.message);
+          transfers.push({ pubKey: merchantPubKey, amount: merchantAmount, error: err.message });
+        }
       }
 
-      console.log(`👥 Processing transfers for ${payeeCount} payees`);
-
-      // Extract payee info from metadata
-      let transfers = [];
+      // Transfer to payees (platform commission, affiliates)
       for(let i = 0; i < payeeCount; i++) {
         const pubKey = metadata[`payee_${i}_pubkey`];
         const amount = parseInt(metadata[`payee_${i}_amount`]);
         const addieURL = metadata[`payee_${i}_addieurl`];
         const signature = metadata[`payee_${i}_signature`];
-        const percent = metadata[`payee_${i}_percent`];
+        const percent = metadata[`payee_${i}_percent`] ? parseInt(metadata[`payee_${i}_percent`]) : undefined;
 
         if(!pubKey || !amount) {
           console.warn(`⚠️ Missing payee data for index ${i}`);
@@ -1072,97 +1005,58 @@ console.warn(err);
         }
 
         try {
-          // Fetch Addie user from payee's addieURL (supports cross-base commerce)
           let payeeUser = null;
-          if(addieURL && signature && percent) {
+
+          // Try remote base first (cross-base commerce)
+          if(addieURL && signature && percent !== undefined) {
             try {
-              console.log(`🌐 Fetching payee from remote base: ${addieURL}`);
               const verifyResponse = await fetch(`${addieURL}/verify-payee`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  pubKey: pubKey,
-                  addieURL: addieURL,
-                  percent: parseInt(percent),
-                  signature: signature
-                })
+                body: JSON.stringify({ pubKey, addieURL, percent, signature })
               });
-
               if(verifyResponse.ok) {
                 const result = await verifyResponse.json();
                 payeeUser = result.addieUser;
-                console.log(`✅ Fetched payee from remote base`);
               }
             } catch(err) {
               console.warn(`⚠️ Failed to fetch payee from ${addieURL}:`, err.message);
             }
           }
 
-          // Fallback to local database lookup
           if(!payeeUser) {
-            console.log(`📍 Using local database lookup for payee`);
             payeeUser = await user.getUserByPublicKey(pubKey);
           }
 
-          if(!payeeUser || !payeeUser.stripePayoutCardId) {
-            console.warn(`⚠️ Payee ${pubKey} does not have a payout card saved, skipping transfer`);
+          const destination = payeeUser && (payeeUser.stripeAccountId || payeeUser.stripePayoutCardId);
+          if(!destination) {
+            console.warn(`⚠️ Payee ${pubKey} has no Stripe destination, skipping`);
             continue;
           }
 
-          // Build transfer description with product info
-          const productName = metadata.product_name || 'Product';
-          const commissionType = i === 0 ? 'Affiliate' : 'Creator';
-          const transferDescription = `${productName} - ${commissionType} payout`;
-
-          // Build transfer metadata with product + commission info
-          const transferMetadata = {
-            product_name: metadata.product_name || 'Unknown product',
-            commission_type: commissionType.toLowerCase(),
-            payee_pubkey: pubKey.substring(0, 20), // Truncate for metadata limit
-            original_payment_intent: paymentIntentId
-          };
-
-          // Add optional metadata fields if present
-          if(metadata.product_id) {
-            transferMetadata.product_id = metadata.product_id;
-          }
-          if(metadata.contract_uuid) {
-            transferMetadata.contract_uuid = metadata.contract_uuid;
-          }
-          if(metadata.emojicode) {
-            transferMetadata.emojicode = metadata.emojicode;
-          }
-
-          // Create direct transfer to debit card (instant payout)
-          console.log(`💸 Transferring ${amount} cents to ${pubKey.substring(0, 10)}...`);
           const transfer = await stripeSDK.transfers.create({
             amount: amount,
             currency: 'usd',
-            destination: payeeUser.stripePayoutCardId,
+            destination: destination,
             transfer_group: transferGroup,
-            description: transferDescription,
-            metadata: transferMetadata
+            description: `${productName} - Affiliate payout`,
+            metadata: {
+              product_name: productName,
+              commission_type: 'affiliate',
+              payee_pubkey: pubKey.substring(0, 20),
+              original_payment_intent: paymentIntentId,
+              ...(metadata.product_id && { product_id: metadata.product_id }),
+              ...(metadata.contract_uuid && { contract_uuid: metadata.contract_uuid }),
+              ...(metadata.emojicode && { emojicode: metadata.emojicode })
+            }
           });
 
-          transfers.push({
-            pubKey: pubKey,
-            amount: amount,
-            transferId: transfer.id,
-            destination: payeeUser.stripePayoutCardId
-          });
-
-          console.log(`✅ Instant payout created: ${transfer.id} (${transferDescription})`);
+          transfers.push({ pubKey, amount, transferId: transfer.id, destination });
         } catch(err) {
           console.error(`❌ Failed to transfer to ${pubKey}:`, err.message);
-          transfers.push({
-            pubKey: pubKey,
-            amount: amount,
-            error: err.message
-          });
+          transfers.push({ pubKey, amount, error: err.message });
         }
       }
-
-      console.log(`✅ Processed ${transfers.filter(t => t.transferId).length}/${payeeCount} transfers successfully`);
 
       return {
         success: true,

@@ -53,6 +53,14 @@ console.log('throwing');
   getKeys: async () => {
     const keyString = await client.get('keys');
     return JSON.parse(keyString);
+  },
+
+  saveExpressAccountByEmail: async (email, accountId) => {
+    await client.set(`stripeExpressEmail:${email}`, accountId);
+  },
+
+  getExpressAccountByEmail: async (email) => {
+    return await client.get(`stripeExpressEmail:${email}`);
   }
 
 };

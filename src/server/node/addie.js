@@ -254,6 +254,7 @@ console.log('trying to get payment intent');
     const currency = body.currency;
     const nonce = body.nonce;
     const payees = body.payees;
+    const merchant = body.merchant;
     const savePaymentMethod = body.savePaymentMethod;
     const signature = body.signature;
 
@@ -291,7 +292,7 @@ console.log('past auth');
           );
           return res.status(forwardResponse.status).send(await forwardResponse.json());
         } else {
-          paymentTokenResponse = await stripe.getStripePaymentIntent(foundUser, amount, currency, payees, savePaymentMethod, productInfo);
+          paymentTokenResponse = await stripe.getStripePaymentIntent(foundUser, amount, currency, payees, savePaymentMethod, productInfo, merchant);
         }
         break;
       case 'square': paymentTokenResponse = await square.getSquarePaymentIntent(foundUser, amount, currency, payees, savePaymentMethod);
