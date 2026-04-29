@@ -346,13 +346,15 @@ const stripe = {
         payeeUser = await user.getUserByPublicKey(payee.pubKey);
       }
 
-      if(payeeUser && payeeUser.stripeAccountId) {
+      const resolvedAmount = payee.amount != null ? payee.amount
+        : (payee.percent != null ? Math.round(amount * payee.percent / 100) : null);
+      if(payeeUser && payeeUser.stripeAccountId && resolvedAmount != null) {
         accountsAndAmounts.push({
           account: payeeUser.stripeAccountId,
-          amount: payee.amount
+          amount: resolvedAmount
         });
       } else {
-        console.warn(`⚠️ Payee ${payee.pubKey} has no Stripe account, skipping`);
+        console.warn(`⚠️ Payee ${payee.pubKey} skipped (no Stripe account or no amount/percent)`);
       }
     }
 
@@ -457,13 +459,15 @@ console.error('Error fetching payment methods:', error);
             payeeUser = await user.getUserByPublicKey(payee.pubKey);
           }
 
-          if(payeeUser && payeeUser.stripeAccountId) {
+          const resolvedAmount = payee.amount != null ? payee.amount
+            : (payee.percent != null ? Math.round(amount * payee.percent / 100) : null);
+          if(payeeUser && payeeUser.stripeAccountId && resolvedAmount != null) {
             accountsAndAmounts.push({
               account: payeeUser.stripeAccountId,
-              amount: payee.amount
+              amount: resolvedAmount
             });
           } else {
-            console.warn(`⚠️ Payee ${payee.pubKey} has no Stripe account, skipping`);
+            console.warn(`⚠️ Payee ${payee.pubKey} skipped (no Stripe account or no amount/percent)`);
           }
         }
       
