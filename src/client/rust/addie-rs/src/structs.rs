@@ -11,7 +11,13 @@ pub struct AddieUser {
     pub uuid: String,
     #[serde(rename = "stripeAccountId")]
     #[serde(default)]
-    pub stripe_account_id: String
+    pub stripe_account_id: String,
+    #[serde(rename = "stripeOnboardingUrl")]
+    #[serde(default)]
+    pub stripe_onboarding_url: Option<String>,
+    #[serde(rename = "alreadyConnected")]
+    #[serde(default)]
+    pub already_connected: bool
 }
 
 impl Default for AddieUser {
@@ -19,7 +25,9 @@ impl Default for AddieUser {
         AddieUser {
             pub_key: "".to_string(),
             uuid: "".to_string(),
-            stripe_account_id: "".to_string()
+            stripe_account_id: "".to_string(),
+            stripe_onboarding_url: None,
+            already_connected: false
         }
     }
 }

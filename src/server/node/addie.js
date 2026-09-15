@@ -1188,5 +1188,8 @@ console.warn(err);
   }
 });
 
-app.listen(3005);
+// gateway-patched: app.listen(3005);
 console.log('Let\'s add it up');
+
+// gateway-patched: added by netlify-gateway/scripts/prepare-services.sh
+export default app;

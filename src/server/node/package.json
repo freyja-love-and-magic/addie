@@ -1,7 +1,7 @@
 {
   "name": "addie",
   "version": "0.0.1",
-  "description": "https://www.github.com/planet-nine-app/addie",
+  "description": "https://www.github.com/freyja-love-and-magic/addie",
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

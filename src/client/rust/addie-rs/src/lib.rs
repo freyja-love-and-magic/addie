@@ -112,6 +112,40 @@ impl Addie {
         Ok(user)
     }
 
+    pub async fn add_processor_express_account(&self, uuid: &str, country: &str, email: &str, refresh_url: &str, return_url: &str) -> Result<AddieUser, Box<dyn std::error::Error>> {
+        let timestamp = Self::get_timestamp();
+        let message = format!("{}{}{}", timestamp, uuid, email);
+        let signature = self.sessionless.sign(&message).to_hex();
+
+        let payload = json!({
+            "timestamp": timestamp,
+            "country": country,
+            "email": email,
+            "refreshUrl": refresh_url,
+            "returnUrl": return_url,
+            "signature": signature
+        }).as_object().unwrap().clone();
+
+        let url = format!("{}user/{}/processor/stripe/express", self.base_url, uuid);
+        let res = self.put(&url, serde_json::Value::Object(payload)).await?;
+
+        // reqwest doesn't fail on non-2xx by default, and the addie server
+        // wraps every internal throw in `res.status(404).send({error: err})`
+        // where `err` is a JS Error object that JSON.stringify collapses to
+        // `{}` — so parsing that as AddieUser (which requires uuid/pubKey)
+        // fails with a useless "could not decode response body". Surface the
+        // real status code and body verbatim instead so the actual server
+        // failure (missing Stripe env, disabled Express Connect, etc.) is
+        // visible in the frontend status toast + Netlify logs together.
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_else(|_| "(no body)".to_string());
+            return Err(format!("Addie /processor/stripe/express returned HTTP {status}: {body}").into());
+        }
+        let user: AddieUser = res.json().await?;
+        Ok(user)
+    }
+
     pub async fn get_payment_intent(&self, uuid: &str, processor: &str, amount: &u32, currency: &str, payees: &Vec<Payee>) -> Result<PaymentIntent, Box<dyn std::error::Error>> {
         let timestamp = Self::get_timestamp();
         let message = format!("{}{}{}{}", timestamp, uuid, amount, currency);

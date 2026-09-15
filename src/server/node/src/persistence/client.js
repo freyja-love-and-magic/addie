@@ -1,64 +1,39 @@
-import { promises as fs } from 'fs';
-import path from 'path';
+// gateway-patched-blob-client: replaces the fs-backed default with a
+// @netlify/blobs adapter so state survives across Lambda invocations.
+// Original file preserved as client.js.orig.
+import { getStore } from '@netlify/blobs';
 
-const keyDepth = 2;
-const delimiter = '_';
-const basePath = 'data/addie';
+const storeName = 'addie';
 
-const filePathForKey = async (key) => {
-  let mutatingKey = key.replace(':', delimiter).trim();
-  const filePathParts = [];
-  for(let i = 0; i < keyDepth; i++) {
-    filePathParts.push(mutatingKey.slice(-3));
-    mutatingKey = mutatingKey.slice(0, -3);
+const getBlobStore = () => {
+  if (process.env.NETLIFY_BLOBS_CONTEXT) {
+    return getStore(storeName);
   }
-  filePathParts.push(mutatingKey);
-  filePathParts.push(basePath);
-
-  const filePath = filePathParts.reverse().join('/');
-
-  return filePath;
+  const edgeURL = process.env.BLOBS_LOCAL_URL;
+  const token = process.env.BLOBS_LOCAL_TOKEN;
+  if (!edgeURL || !token) {
+    throw new Error(
+      'No Netlify Blobs context found and BLOBS_LOCAL_URL/BLOBS_LOCAL_TOKEN are not set.'
+    );
+  }
+  return getStore({ name: storeName, edgeURL, token, siteID: 'local-dev-site' });
 };
 
 const set = async (key, value) => {
-  const filePath = await filePathForKey(key);
-  
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, value);
-  
+  await getBlobStore().set(key, value);
   return true;
-}
+};
 
 const get = async (key) => {
-  const filePath = await filePathForKey(key);
-
-  try {
-    return await fs.readFile(filePath, 'utf8');
-  } catch(err) {
-    return null;
-  }
+  return await getBlobStore().get(key);
 };
 
 const del = async (key) => {
-  const filePath = await filePathForKey(key);
-
-  await fs.unlink(filePath);
-
+  await getBlobStore().delete(key);
   return true;
 };
 
-const createClient = () => {
-  return {
-    on: () => createClient,
-  };
-};
-
-createClient.connect = () => {
-  return {
-    set,
-    get,
-    del
-  };
-};
+const createClient = () => ({ on: () => createClient });
+createClient.connect = () => ({ set, get, del });
 
 export { createClient };

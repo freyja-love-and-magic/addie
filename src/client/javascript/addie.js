@@ -1,5 +1,4 @@
 import sessionless from 'sessionless-node';
-import fetch from 'node-fetch';
 
 const get = async (url) => {
   return await fetch(url);
@@ -290,6 +289,18 @@ console.log('response from addie', user);
   // Transfer Processing
   processPaymentTransfers: async (paymentIntentId) => {
     const url = `${addie.baseURL}payment/${paymentIntentId}/process-transfers`;
+    const res = await post(url, {});
+    const result = await res.json();
+
+    return result;
+  },
+
+  // Distinct from processPaymentTransfers above: that one moves funds to
+  // payout *cards* (Stripe Issuing), this one settles splits to Stripe
+  // Connected Accounts. Two different server routes, two different
+  // processors on Addie's side — a Connect payout has to use this one.
+  processConnectedTransfers: async (paymentIntentId) => {
+    const url = `${addie.baseURL}payment/${paymentIntentId}/process-connected-transfers`;
     const res = await post(url, {});
     const result = await res.json();
 
