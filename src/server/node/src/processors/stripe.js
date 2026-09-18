@@ -156,6 +156,86 @@ const stripe = {
     return foundUser;
   },
 
+  // ── Embedded onboarding (Stripe Connect iOS/Android SDKs) ──────────────────
+  //
+  // The native SDKs onboard inside the app instead of bouncing to a hosted
+  // page in the browser. They're driven by an Account Session, not an
+  // Account Link: the session's client_secret delegates access to ONE
+  // connected account, and the SDK calls back for a fresh one when it
+  // expires. So the account is keyed strictly to this Addie user —
+  // deliberately NOT reusing putStripeExpressAccount's lookup-by-email,
+  // which would let anyone who typed your email open a session on your
+  // account and see or change its payout details.
+
+  ensureStripeExpressAccount: async (foundUser, country, email) => {
+    if(foundUser.stripeAccountId) {
+      return foundUser;
+    }
+    if(!country || !email) {
+      throw new Error('country and email are required to create a Stripe account');
+    }
+
+    const account = await stripeSDK.accounts.create({
+      type: 'express',
+      country: country,
+      email: email,
+      capabilities: {
+        transfers: {
+          requested: true
+        }
+      }
+    });
+
+    foundUser.stripeAccountId = account.id;
+    await user.saveUser(foundUser);
+
+    return foundUser;
+  },
+
+  createAccountSession: async (foundUser) => {
+    const session = await stripeSDK.accountSessions.create({
+      account: foundUser.stripeAccountId,
+      components: {
+        account_onboarding: {
+          enabled: true
+        }
+      }
+    });
+
+    return {
+      accountId: foundUser.stripeAccountId,
+      clientSecret: session.client_secret,
+      expiresAt: session.expires_at,
+      publishableKey: stripePublishingKey
+    };
+  },
+
+  // What the app needs to decide whether invoices can be paid out. eumachia
+  // pays creators with a Transfer to this account, so `transfersActive` is
+  // the capability that actually matters; the rest explains why it isn't
+  // active yet (still onboarding vs. Stripe reviewing what was submitted).
+  getAccountStatus: async (foundUser) => {
+    if(!foundUser.stripeAccountId) {
+      return { hasAccount: false };
+    }
+
+    const account = await stripeSDK.accounts.retrieve(foundUser.stripeAccountId);
+    const requirements = account.requirements || {};
+
+    return {
+      hasAccount: true,
+      accountId: account.id,
+      detailsSubmitted: !!account.details_submitted,
+      chargesEnabled: !!account.charges_enabled,
+      payoutsEnabled: !!account.payouts_enabled,
+      transfersActive: account.capabilities?.transfers === 'active',
+      currentlyDue: (requirements.currently_due || []).length,
+      pastDue: (requirements.past_due || []).length,
+      pendingVerification: (requirements.pending_verification || []).length,
+      disabledReason: requirements.disabled_reason || null
+    };
+  },
+
   getStripePaymentIntent: async (foundUser, amount, currency, payees, savePaymentMethod = false, productInfo = {}, merchant = null) => {
     const customerId = foundUser.stripeCustomerId || (await stripeSDK.customers.create()).id;
     if(foundUser.stripeCustomerId !== customerId) {

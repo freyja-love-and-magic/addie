@@ -10,7 +10,7 @@ use sessionless::hex::IntoHex;
 use sessionless::{Sessionless, Signature};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
-use crate::structs::{AddieUser, Gateway, Nineum, Spell, SpellResult, SuccessResult, PaymentIntent, Payee};
+use crate::structs::{AddieUser, Gateway, Nineum, Spell, SpellResult, SuccessResult, PaymentIntent, Payee, StripeAccountSession, StripeAccountStatus};
 
 pub struct Addie {
     base_url: String,
@@ -144,6 +144,51 @@ impl Addie {
         }
         let user: AddieUser = res.json().await?;
         Ok(user)
+    }
+
+    /// Returns an Account Session for the Stripe Connect mobile SDKs'
+    /// embedded onboarding, creating the user's Express account first if they
+    /// don't have one yet (`country`/`email` are only needed then). Call again
+    /// whenever the SDK asks for a fresh client secret.
+    pub async fn create_stripe_account_session(&self, uuid: &str, country: Option<&str>, email: Option<&str>) -> Result<StripeAccountSession, Box<dyn std::error::Error>> {
+        let timestamp = Self::get_timestamp();
+        let signature = self.sessionless.sign(&format!("{}{}", timestamp, uuid)).to_hex();
+
+        let payload = json!({
+            "timestamp": timestamp,
+            "country": country,
+            "email": email,
+            "signature": signature
+        });
+
+        let url = format!("{}user/{}/processor/stripe/account-session", self.base_url, uuid);
+        let res = self.post(&url, payload).await?;
+        Self::json_or_error(res, "/processor/stripe/account-session").await
+    }
+
+    /// Live status of the user's connected account, straight from Stripe.
+    pub async fn get_stripe_account_status(&self, uuid: &str) -> Result<StripeAccountStatus, Box<dyn std::error::Error>> {
+        let timestamp = Self::get_timestamp();
+        let signature = self.sessionless.sign(&format!("{}{}", timestamp, uuid)).to_hex();
+
+        let url = format!("{}user/{}/processor/stripe/account?timestamp={}&signature={}", self.base_url, uuid, timestamp, signature);
+        let res = self.get(&url).await?;
+        Self::json_or_error(res, "/processor/stripe/account").await
+    }
+
+    /// Addie answers failures with a non-2xx status and `{error: "..."}`;
+    /// surface that message rather than a serde "missing field" error.
+    async fn json_or_error<T: serde::de::DeserializeOwned>(res: Response, route: &str) -> Result<T, Box<dyn std::error::Error>> {
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                .unwrap_or(body);
+            return Err(format!("Addie {route} returned HTTP {status}: {message}").into());
+        }
+        Ok(res.json().await?)
     }
 
     pub async fn get_payment_intent(&self, uuid: &str, processor: &str, amount: &u32, currency: &str, payees: &Vec<Payee>) -> Result<PaymentIntent, Box<dyn std::error::Error>> {

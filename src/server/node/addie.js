@@ -243,6 +243,77 @@ console.log('set status');
   }
 });
 
+// ── Embedded Connect onboarding ─────────────────────────────────────────────
+//
+// For the Stripe Connect mobile SDKs, which onboard in-app rather than via a
+// hosted Account Link (see the express route above). Both routes answer 503
+// with a plain reason when Stripe keys are missing, so a client can show
+// "payouts aren't set up on this server" instead of an opaque failure.
+
+const stripeUnconfigured = () => {
+  if(!process.env.STRIPE_KEY) return 'Stripe is not configured on this Addie (STRIPE_KEY is unset)';
+  if(!process.env.STRIPE_PUBLISHING_KEY) return 'Stripe is not configured on this Addie (STRIPE_PUBLISHING_KEY is unset)';
+  return null;
+};
+
+// Creates the user's Express account on first call (country + email
+// required then), and returns an Account Session client secret for it.
+// Called again by the SDK whenever the previous session expires.
+// Signature: timestamp + uuid
+app.post('/user/:uuid/processor/stripe/account-session', async (req, res) => {
+  try {
+    const uuid = req.params.uuid;
+    const { timestamp, country, email, signature } = req.body;
+
+    const foundUser = await user.getUserByUUID(uuid);
+
+    if(!signature || !sessionless.verifySignature(signature, timestamp + uuid, foundUser.pubKey)) {
+      res.status(403);
+      return res.send({error: 'Auth error'});
+    }
+
+    const unconfigured = stripeUnconfigured();
+    if(unconfigured) {
+      res.status(503);
+      return res.send({error: unconfigured});
+    }
+
+    const accountUser = await stripe.ensureStripeExpressAccount(foundUser, country, email);
+    res.send(await stripe.createAccountSession(accountUser));
+  } catch(err) {
+console.warn(err);
+    res.status(err.type?.startsWith('Stripe') ? 502 : 400);
+    res.send({error: err.message || 'Could not create account session'});
+  }
+});
+
+// Signature: timestamp + uuid
+app.get('/user/:uuid/processor/stripe/account', async (req, res) => {
+  try {
+    const uuid = req.params.uuid;
+    const { timestamp, signature } = req.query;
+
+    const foundUser = await user.getUserByUUID(uuid);
+
+    if(!signature || !sessionless.verifySignature(signature, timestamp + uuid, foundUser.pubKey)) {
+      res.status(403);
+      return res.send({error: 'Auth error'});
+    }
+
+    const unconfigured = stripeUnconfigured();
+    if(unconfigured) {
+      res.status(503);
+      return res.send({error: unconfigured});
+    }
+
+    res.send(await stripe.getAccountStatus(foundUser));
+  } catch(err) {
+console.warn(err);
+    res.status(err.type?.startsWith('Stripe') ? 502 : 404);
+    res.send({error: err.message || 'Could not load account status'});
+  }
+});
+
 app.post('/user/:uuid/processor/:processor/intent', async (req, res) => {
   try {
 console.log('trying to get payment intent');

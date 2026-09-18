@@ -121,3 +121,30 @@ pub struct Payee {
     pub pubKey: String,
     pub amount: i32
 }
+
+/// Client secret for the Stripe Connect SDKs' embedded onboarding.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct StripeAccountSession {
+    pub account_id: String,
+    pub client_secret: String,
+    pub expires_at: u64,
+    pub publishable_key: String,
+}
+
+/// A connected account's state as Stripe reports it. `transfers_active` is
+/// what lets it receive a payout split.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all="camelCase", default)]
+pub struct StripeAccountStatus {
+    pub has_account: bool,
+    pub account_id: Option<String>,
+    pub details_submitted: bool,
+    pub charges_enabled: bool,
+    pub payouts_enabled: bool,
+    pub transfers_active: bool,
+    pub currently_due: u32,
+    pub past_due: u32,
+    pub pending_verification: u32,
+    pub disabled_reason: Option<String>,
+}
