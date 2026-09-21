@@ -175,12 +175,23 @@ const stripe = {
       throw new Error('country and email are required to create a Stripe account');
     }
 
+    // `transfers` is the capability we actually use — eumachia charges the
+    // payer on the platform account and transfers the creator's split. But
+    // Stripe refuses `transfers` without `card_payments` unless the platform
+    // is specially approved ("Your platform needs approval for accounts to
+    // have requested the transfers capability without the card_payments
+    // capability"), so we request both. card_payments goes unused: nothing
+    // charges a card on the connected account. The cost is a slightly longer
+    // onboarding form, since card_payments asks for more business detail.
     const account = await stripeSDK.accounts.create({
       type: 'express',
       country: country,
       email: email,
       capabilities: {
         transfers: {
+          requested: true
+        },
+        card_payments: {
           requested: true
         }
       }
