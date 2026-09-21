@@ -26,6 +26,16 @@ const processConnectedAccountTransfers = async (paymentIntentId) => {
 
     const metadata = paymentIntent.metadata;
     const transferGroup = paymentIntent.transfer_group;
+
+    // Tie each transfer to the charge that funded it. Without this, Stripe
+    // pays out of the platform's AVAILABLE balance — and card settlements
+    // sit in `pending` for a couple of days, so a payout fails with
+    // "insufficient available funds" unless the platform happens to be
+    // floating enough money. With source_transaction the funds come from
+    // this specific charge, so the payout works as soon as the charge does.
+    const sourceTransaction = typeof paymentIntent.latest_charge === 'string'
+      ? paymentIntent.latest_charge
+      : paymentIntent.latest_charge?.id;
     const payeeCount = parseInt(metadata.payee_count || '0');
 
     // buildPayeeMetadata (stripe.js) writes TWO kinds of recipient, and both
@@ -106,14 +116,19 @@ const processConnectedAccountTransfers = async (paymentIntentId) => {
 
         // Create transfer to Connected Account
         console.log(`💸 Transferring ${amount} cents to ${name} (${pubKey.substring(0, 10)}...)`);
-        const transfer = await stripeSDK.transfers.create({
+        const transferParams = {
           amount: amount,
           currency: 'usd',
           destination: payeeUser.stripeAccountId,
           transfer_group: transferGroup,
           description: transferDescription,
           metadata: transferMetadata
-        });
+        };
+        if (sourceTransaction) {
+          transferParams.source_transaction = sourceTransaction;
+        }
+
+        const transfer = await stripeSDK.transfers.create(transferParams);
 
         transfers.push({
           pubKey: pubKey,
