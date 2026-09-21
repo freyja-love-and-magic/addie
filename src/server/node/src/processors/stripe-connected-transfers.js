@@ -28,8 +28,44 @@ const processConnectedAccountTransfers = async (paymentIntentId) => {
     const transferGroup = paymentIntent.transfer_group;
     const payeeCount = parseInt(metadata.payee_count || '0');
 
-    if (payeeCount === 0) {
-      console.log(`ℹ️ No payees for payment ${paymentIntentId}`);
+    // buildPayeeMetadata (stripe.js) writes TWO kinds of recipient, and both
+    // have to be paid: the merchant — who gets the bulk of the charge (91%,
+    // the invoice creator in eumachia's case) — under merchant_pubkey, and
+    // any affiliates under payee_N_pubkey. Only the payee_N series used to
+    // be transferred here, so a plain invoice (merchant, no affiliates) got
+    // payee_count: 0, returned "No payees to transfer to", and left the
+    // creator's money sitting on the platform account with the payment
+    // itself marked successful.
+    const recipients = [];
+
+    if (metadata.merchant_pubkey && parseInt(metadata.merchant_amount || '0') > 0) {
+      recipients.push({
+        pubKey: metadata.merchant_pubkey,
+        amount: parseInt(metadata.merchant_amount),
+        name: metadata.merchant_name || 'Merchant',
+        role: 'merchant'
+      });
+    }
+
+    for (let i = 0; i < payeeCount; i++) {
+      const pubKey = metadata[`payee_${i}_pubkey`];
+      const amount = parseInt(metadata[`payee_${i}_amount`]);
+
+      if (!pubKey || !amount) {
+        console.warn(`⚠️ Missing payee data for index ${i}`);
+        continue;
+      }
+
+      recipients.push({
+        pubKey,
+        amount,
+        name: metadata[`payee_${i}_name`] || `Payee ${i + 1}`,
+        role: 'payee'
+      });
+    }
+
+    if (recipients.length === 0) {
+      console.log(`ℹ️ No transfer recipients for payment ${paymentIntentId}`);
       return {
         success: true,
         transfers: [],
@@ -37,20 +73,10 @@ const processConnectedAccountTransfers = async (paymentIntentId) => {
       };
     }
 
-    console.log(`👥 Processing transfers for ${payeeCount} payees`);
+    console.log(`👥 Processing transfers for ${recipients.length} recipients`);
 
-    // Extract payee info from metadata
     let transfers = [];
-    for (let i = 0; i < payeeCount; i++) {
-      const pubKey = metadata[`payee_${i}_pubkey`];
-      const amount = parseInt(metadata[`payee_${i}_amount`]);
-      const name = metadata[`payee_${i}_name`] || `Payee ${i + 1}`;
-
-      if (!pubKey || !amount) {
-        console.warn(`⚠️ Missing payee data for index ${i}`);
-        continue;
-      }
-
+    for (const { pubKey, amount, name, role } of recipients) {
       try {
         // Fetch payee user by pubKey
         const payeeUser = await user.getUserByPublicKey(pubKey);
@@ -73,6 +99,7 @@ const processConnectedAccountTransfers = async (paymentIntentId) => {
         const transferMetadata = {
           product_name: metadata.product_name || 'Unknown product',
           payee_name: name,
+          payee_role: role,
           payee_pubkey: pubKey.substring(0, 20), // Truncate for metadata limit
           original_payment_intent: paymentIntentId
         };
@@ -107,7 +134,7 @@ const processConnectedAccountTransfers = async (paymentIntentId) => {
       }
     }
 
-    console.log(`✅ Processed ${transfers.filter(t => t.transferId).length}/${payeeCount} transfers successfully`);
+    console.log(`✅ Processed ${transfers.filter(t => t.transferId).length}/${recipients.length} transfers successfully`);
 
     return {
       success: true,
