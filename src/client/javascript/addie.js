@@ -109,7 +109,13 @@ console.log('response from addie', user);
     return user;
   },
 
-  getPaymentIntent: async (uuid, processor, amount, currency, payees) => {
+  // `merchant` ({pubKey}) is the party who receives the bulk of the charge
+  // (91%) — an invoice's creator, say — as distinct from `payees`, the
+  // affiliate splits. It has to be forwarded: without it the server builds
+  // the intent with no merchant_pubkey in its metadata, and the later
+  // transfer step has no one to pay, so the charge succeeds and the money
+  // never leaves the platform account.
+  getPaymentIntent: async (uuid, processor, amount, currency, payees, merchant) => {
     const timestamp = new Date().getTime() + '';
     const message = timestamp + uuid + amount + currency;
     const signature = await sessionless.sign(message);
@@ -121,6 +127,10 @@ console.log('response from addie', user);
 	"payees": payees,
 	"signature": signature
     };
+
+    if(merchant) {
+      payload.merchant = merchant;
+    }
 
     const url = `${addie.baseURL}user/${uuid}/processor/${processor}/intent`;
     const res = await post(url, payload);   //  Start here

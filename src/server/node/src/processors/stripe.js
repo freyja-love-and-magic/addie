@@ -97,6 +97,11 @@ const stripe = {
       capabilities: {
         transfers: {
           requested: true
+        },
+        // Same reason as the Express path below: Stripe won't grant
+        // transfers alone without approving the platform for it first.
+        card_payments: {
+          requested: true
         }
       },
       controller: {
