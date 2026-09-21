@@ -176,19 +176,26 @@ impl Addie {
         Self::json_or_error(res, "/processor/stripe/account").await
     }
 
-    /// Addie answers failures with a non-2xx status and `{error: "..."}`;
-    /// surface that message rather than a serde "missing field" error.
+    /// Addie reports failures as `{error: "..."}`, usually with a non-2xx
+    /// status — but not always: the timestamp-freshness middleware answers
+    /// HTTP 200 with an error body. So treat an `error` field as a failure
+    /// whatever the status, rather than letting a struct whose fields all
+    /// have defaults decode it into a plausible-looking empty answer.
     async fn json_or_error<T: serde::de::DeserializeOwned>(res: Response, route: &str) -> Result<T, Box<dyn std::error::Error>> {
         let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
-                .unwrap_or(body);
-            return Err(format!("Addie {route} returned HTTP {status}: {message}").into());
+        let body = res.text().await.unwrap_or_default();
+
+        let parsed: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| format!("Addie {route} returned HTTP {status} with unreadable body ({e}): {body}"))?;
+
+        if let Some(message) = parsed.get("error").and_then(|e| e.as_str()) {
+            return Err(format!("Addie {route}: {message}").into());
         }
-        Ok(res.json().await?)
+        if !status.is_success() {
+            return Err(format!("Addie {route} returned HTTP {status}: {body}").into());
+        }
+
+        Ok(serde_json::from_value(parsed)?)
     }
 
     pub async fn get_payment_intent(&self, uuid: &str, processor: &str, amount: &u32, currency: &str, payees: &Vec<Payee>) -> Result<PaymentIntent, Box<dyn std::error::Error>> {
