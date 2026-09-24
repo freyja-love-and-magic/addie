@@ -5,7 +5,7 @@
 Addie is a Planet Nine allyabase microservice that handles payment processing and financial transactions.
 
 **Location**: `/addie/`
-**Port**: 3004 (default)
+**Port**: **3005** (`addie.js` ends in `app.listen(3005)`; this file said 3004, which is Joan's in allyabase's port map)
 
 ## Core Features
 
@@ -32,6 +32,12 @@ Addie is a Planet Nine allyabase microservice that handles payment processing an
 ### Stripe Payment Intents
 - `POST /processor/stripe/payment-intent` - Create payment intent with affiliate splits
 - `POST /processor/stripe/payment-intent-without-splits` - Create simple payment intent
+
+### Embedded Stripe Connect onboarding (September 2026)
+- `POST /user/:uuid/processor/stripe/account-session` - Mint an **Account Session** for Stripe's embedded components
+- `GET /user/:uuid/processor/stripe/account` - Real onboarding/capability status for that account
+
+Both answer **503 when Stripe keys are unset**, so an environment without keys presents itself as "not configured" rather than as a broken payment path. See "Embedded Connect onboarding" below.
 
 ### Stripe Issuing (Virtual Cards for the Unbanked)
 - `POST /issuing/cardholder` - Create Stripe Issuing cardholder with KYC information
@@ -981,5 +987,95 @@ const transfer = await stripe.transfers.create({
 
 See `/mutopia/CONNECTED-ACCOUNT-TRANSFERS.md` for complete implementation details, troubleshooting, and testing procedures.
 
+## Embedded Connect onboarding, and the payout path (September 2026)
+
+Written up after getting one real payment from a card to a creator's Stripe
+balance, which took five stacked fixes. Four of them were here.
+
+### Account Session, not Account Link
+
+Stripe's **embedded** Connect components (what the getpayed iOS app now
+presents in-app, instead of opening hosted onboarding in a browser) need a
+session token from `accountSessions.create`. That is a different call from
+the Account Link used for hosted onboarding, and the two are not
+interchangeable.
+
+- `ensureStripeExpressAccount` — creates or finds the user's Express account
+- `createAccountSession` — mints the session the SDK consumes
+- `getAccountStatus` — the real state, because account creation reports
+  "connected" immediately and onboarding may be nowhere near finished
+
+All three live in `src/processors/stripe.js`, exposed by the two routes
+listed above. The client side (`addie-rs`:
+`create_stripe_account_session`, `get_stripe_account_status`) treats **any
+`{error}` body as a failure** regardless of status code — `json_or_error` —
+because a 200 carrying an error body was being read as success.
+
+### `transfers` needs `card_payments` next to it
+
+Stripe refuses the `transfers` capability on its own without special platform
+approval: *"you have requested the transfers capability without the
+card_payments capability"*. **Both account-creation paths now request both.**
+`card_payments` goes unused — nothing charges these accounts — but it is the
+price of being able to transfer. The November 2025 example above shows
+`capabilities: { transfers: { requested: true } }` alone; that is no longer
+sufficient, and it does ask for more business detail during onboarding.
+
+### Transfers must be funded from the charge
+
+A transfer draws on the platform's **available** balance by default, which in
+test mode is empty, so every payout failed with insufficient funds while the
+charge had obviously succeeded. `stripe-connected-transfers.js` now passes
+**`source_transaction`** (the PaymentIntent's `latest_charge`), which funds
+the transfer from that charge directly and sidesteps the platform balance
+entirely.
+
+If you want the other behaviour, `pm_card_bypassPending` is the test card
+that settles straight to available balance.
+
+### The merchant has to be in the recipients list
+
+`stripe-connected-transfers.js` builds a `recipients` list, and the merchant
+was not in it: their `merchant_pubkey` / `merchant_amount` now go in
+alongside the affiliate splits. Before that, knowing who the merchant was
+changed nothing — nothing was transferred to them.
+
+### addie-js 0.0.8 is the floor for eumachia
+
+`getPaymentIntent` took five parameters and silently dropped the `merchant`
+argument eumachia passes as its sixth. The intent then carried no
+`merchant_pubkey`, the payout step found nobody to pay, and **the charge
+succeeded while the creator's money stayed on the platform account** — the
+worst possible failure shape, since every visible signal said paid.
+Published as 0.0.8 with the sixth parameter. Don't relax that pin in
+eumachia.
+
+### Still missing
+
+**No webhook or dispute handling anywhere in this stack** — not here, not in
+eumachia, not in the apps. Payment outcomes are established by the payer's
+browser reporting success and by polling, which is documented as acceptable
+at this scale in getpayed's `CLAUDE.md` but is the first thing to fix if
+money volume grows.
+
+### Related
+
+- **allyabase/CLAUDE.md** → "How the apps and services fit together" has the
+  whole money path end to end, plus the rest of the integration seams.
+- **eumachia/CLAUDE.md** — the caller: what it expects from
+  `processConnectedTransfers`, and its 31-case Stripe test-mode suite, whose
+  `test/README.md` names the card or token that triggers each failure.
+- **getpayed/CLAUDE.md** — the app: the `PayoutRecord` states and reasons the
+  payout leg is reported through, and why the Stripe iOS SDK links into the
+  app target rather than the Tauri plugin.
+
 ## Last Updated
+September 24, 2026 - Documented embedded Connect onboarding (Account
+Sessions, the two new routes, 503 without keys) and the four fixes on the
+payout path: `card_payments` alongside `transfers`, `source_transaction`
+funding, the merchant in the recipients list, and addie-js 0.0.8. Corrected
+the stated port to 3005. Nothing else in this file was re-verified; the
+November 2025 material below predates all of it, and its Connected Accounts
+example is missing `card_payments`.
+
 November 19, 2025 - Added comprehensive Stripe Connected Accounts documentation for platform revenue splits. Documented critical setup requirements (business_type: 'company', tax_id, valid URL), common errors and fixes, and differences from payout cards. Includes complete code examples for account creation, capability troubleshooting, and transfer processing. Ready for production platform integrations.
