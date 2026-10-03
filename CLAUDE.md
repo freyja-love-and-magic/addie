@@ -1079,3 +1079,19 @@ November 2025 material below predates all of it, and its Connected Accounts
 example is missing `card_payments`.
 
 November 19, 2025 - Added comprehensive Stripe Connected Accounts documentation for platform revenue splits. Documented critical setup requirements (business_type: 'company', tax_id, valid URL), common errors and fixes, and differences from payout cards. Includes complete code examples for account creation, capability troubleshooting, and transfer processing. Ready for production platform integrations.
+
+## Platform fee on merchant payments (October 2026)
+
+`src/server/node/src/processors/payee-split.js`, tested by `npm test` in
+`src/server/node`. For a payment with a merchant (eumachia's invoices):
+Stripe's fee (2.9% + 30c) comes off the charge first, the platform keeps
+`PLATFORM_FEE_PERCENT` of the invoice amount (default **0.9**), and the
+merchant gets the rest. $100 invoice: Stripe $3.20, platform $0.90, merchant
+$95.90. Until October 2026 the merchant got a flat 91% and the platform's 9%
+absorbed Stripe's fee.
+
+The setting is read per payment from the environment, so changing it needs
+`pm2 restart addie --update-env`, not a code change. Payment intents already
+created keep the split they were created with. The intent's metadata now
+also carries `platform_fee` and `platform_fee_percent`.
+

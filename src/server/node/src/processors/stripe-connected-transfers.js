@@ -38,9 +38,10 @@ const processConnectedAccountTransfers = async (paymentIntentId) => {
       : paymentIntent.latest_charge?.id;
     const payeeCount = parseInt(metadata.payee_count || '0');
 
-    // buildPayeeMetadata (stripe.js) writes TWO kinds of recipient, and both
-    // have to be paid: the merchant — who gets the bulk of the charge (91%,
-    // the invoice creator in eumachia's case) — under merchant_pubkey, and
+    // buildPayeeMetadata (payee-split.js) writes TWO kinds of recipient, and
+    // both have to be paid: the merchant (the invoice creator in eumachia's
+    // case), who gets what's left after Stripe's fee and the platform fee,
+    // under merchant_pubkey; and
     // any affiliates under payee_N_pubkey. Only the payee_N series used to
     // be transferred here, so a plain invoice (merchant, no affiliates) got
     // payee_count: 0, returned "No payees to transfer to", and left the

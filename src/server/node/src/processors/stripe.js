@@ -2,6 +2,7 @@ import user from '../user/user.js';
 import db from '../persistence/db.js';
 import sessionless from 'sessionless-node';
 import _stripe from 'stripe';
+import { buildPayeeMetadata } from './payee-split.js';
 const stripeKey = process.env.STRIPE_KEY;
 const stripePublishingKey = process.env.STRIPE_PUBLISHING_KEY;
 
@@ -27,47 +28,8 @@ if(!stripeKey) {
 
 const stripeSDK = _stripe(stripeKey);
 
-// Standard US Stripe processing fee: 2.9% + $0.30
-const calculateStripeFee = (amount) => Math.round(amount * 0.029) + 30;
-
-// Build payee metadata for payment intent.
-// merchant (optional) receives 91% of amount.
-// payees (each with a percent field ≤9) split the remaining pool after the Stripe fee.
-const buildPayeeMetadata = (payees, merchant, amount) => {
-  const stripeFee = calculateStripeFee(amount);
-  const net = Math.max(0, amount - stripeFee);
-  const merchantAmount = merchant ? Math.min(Math.round(amount * 0.91), net) : 0;
-  const distributable = Math.max(0, net - merchantAmount);
-
-  const metadata = {};
-
-  if (merchant) {
-    metadata.merchant_pubkey = merchant.pubKey;
-    metadata.merchant_amount = merchantAmount.toString();
-  }
-
-  const validPayees = (payees || []).filter(p => p.pubKey && p.percent > 0 && p.percent <= 9);
-  const totalPercent = validPayees.reduce((s, p) => s + p.percent, 0) || 1;
-
-  let count = 0;
-  for (const payee of validPayees) {
-    const payeeAmount = distributable > 0
-      ? Math.round(distributable * payee.percent / Math.max(9, totalPercent))
-      : 0;
-    if (payeeAmount <= 0) continue;
-    metadata[`payee_${count}_pubkey`] = payee.pubKey;
-    metadata[`payee_${count}_amount`] = payeeAmount.toString();
-    metadata[`payee_${count}_percent`] = payee.percent.toString();
-    if (payee.addieURL) metadata[`payee_${count}_addieurl`] = payee.addieURL;
-    if (payee.signature) metadata[`payee_${count}_signature`] = payee.signature.substring(0, 450);
-    count++;
-  }
-  metadata.payee_count = count.toString();
-  metadata.stripe_fee = stripeFee.toString();
-
-  return metadata;
-};
-
+// The split (Stripe's fee, the platform's PLATFORM_FEE_PERCENT, the merchant's
+// remainder) lives in payee-split.js, so it can be tested without Stripe.
 const stripe = {
   putStripeAccount: async (foundUser, country, name, email, ip) => {
     const account = await stripeSDK.accounts.create({
