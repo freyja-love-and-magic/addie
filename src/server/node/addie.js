@@ -1105,6 +1105,34 @@ app.post('/demo/payment/create', async (req, res) => {
   }
 });
 
+// Status of a payment intent created for this user (e.g. 'succeeded'), so apps can confirm payment
+app.get('/user/:uuid/processor/:processor/payment/:paymentIntentId/status', async (req, res) => {
+  try {
+    const { uuid, processor, paymentIntentId } = req.params;
+    const timestamp = req.query.timestamp;
+    const signature = req.query.signature;
+
+    const foundUser = await user.getUserByUUID(uuid);
+
+    const message = timestamp + uuid + paymentIntentId;
+    if(!signature || !sessionless.verifySignature(signature, message, foundUser.pubKey)) {
+      res.status(403);
+      return res.send({error: 'Auth error'});
+    }
+
+    if(processor !== 'stripe') {
+      res.status(400);
+      return res.send({error: 'processor not supported'});
+    }
+
+    res.send(await stripe.getPaymentIntentStatus(foundUser, paymentIntentId));
+  } catch(err) {
+    console.warn(err);
+    res.status(404);
+    res.send({error: err.message || 'not found'});
+  }
+});
+
 // Process transfers to payout cards (for affiliate commissions)
 app.post('/payment/:paymentIntentId/process-transfers', async (req, res) => {
   try {

@@ -340,6 +340,21 @@ const stripe = {
     return response;
   },
 
+  getPaymentIntentStatus: async (foundUser, paymentIntentId) => {
+    const paymentIntent = await stripeSDK.paymentIntents.retrieve(paymentIntentId);
+
+    if(!foundUser.stripeCustomerId || paymentIntent.customer !== foundUser.stripeCustomerId) {
+      throw new Error('payment intent does not belong to user');
+    }
+
+    return {
+      paymentIntentId: paymentIntent.id,
+      status: paymentIntent.status,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency
+    };
+  },
+
   getSubscriptionPaymentIntent:  async (foundUser, amount, currency, subscriptionId, payees) => {
     const customerId = foundUser.stripeCustomerId || (await stripeSDK.customers.create()).id;
     if(foundUser.stripeCustomerId !== customerId) {

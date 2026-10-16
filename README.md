@@ -242,3 +242,23 @@ To do so they should implement the following methods:
 [resolver]: https://github.com/freyja-love-and-magic/MAGIC/blob/main/README-DEV.md#resolvers
 [continuebee]: https://github.com/freyja-love-and-magic/continuebee
 
+
+<details>
+ <summary><code>GET</code> <code><b>/user/:uuid/processor/stripe/payment/:paymentIntentId/status</b></code> <code>Returns the status of a payment intent created for this user, so an app can confirm payment before granting anything.</code></summary>
+
+##### Parameters (query)
+
+> | name         |  required     | data type               | description                                                           |
+> |--------------|-----------|-------------------------|-----------------------------------------------------------------------|
+> | timestamp    |  true     | string                  | |
+> | signature    |  true     | string (signature)      | sessionless signature of `timestamp + uuid + paymentIntentId`  |
+
+##### Responses
+
+> | http code     | content-type                      | response                                                            |
+> |---------------|-----------------------------------|---------------------------------------------------------------------|
+> | `200`         | `application/json`                | `{"paymentIntentId": "pi_...", "status": "succeeded", "amount": 1000, "currency": "usd"}`   |
+> | `403`         | `application/json`                | `{"error":"Auth error"}`                            |
+> | `404`         | `application/json`                | `{"error":"payment intent does not belong to user"}` (or not found)  |
+
+</details>
